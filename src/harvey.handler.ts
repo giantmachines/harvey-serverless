@@ -13,9 +13,13 @@ export class HarveyHandler {
     private readonly slack: SlackClient,
     private readonly execSlack: SlackClient,
     private readonly slackAPI: WebClient
-  ) { }
+  ) {}
 
-  public handle = async (event: APIGatewayEvent, context: Context, cb: Callback) => {
+  public handle = async (
+    event: APIGatewayEvent,
+    context: Context,
+    cb: Callback
+  ) => {
     try {
       // Determine start and end dates
       const to = moment().format('YYYY-MM-DD');
@@ -23,7 +27,7 @@ export class HarveyHandler {
 
       let fromDelta;
       switch (dayOfWeek) {
-        case 1: // Monday
+        case 1: // Monday we actually look at last weeks timesheet.
           fromDelta = 7;
           break;
         case 2: // Tuesday
@@ -38,50 +42,88 @@ export class HarveyHandler {
         case 5: // Friday
           fromDelta = 4;
           break;
-      };
+      }
 
       // Setting the from to just be from the beginning of the week unless it is Monday.
       const from = moment().subtract(fromDelta, 'days').format('YYYY-MM-DD');
 
       // Fetch time entries and users from Harvest
-      const [slackUsers, users, timeEntries] = await Promise.all([this.getSlackProfiles(), this.harvest.getUsers(), this.harvest.getTimeEntries({ from, to })]);
-      console.log('slackUsers', slackUsers);
+      const [slackUsers, users, timeEntries] = await Promise.all([
+        this.getSlackProfiles(),
+        this.harvest.getUsers(),
+        this.harvest.getTimeEntries({ from, to }),
+      ]);
+      // console.log('slackUsers', slackUsers);
 
-      this.sendMessages(slackUsers, users, timeEntries, from, to, dayOfWeek, 'general');
-      this.sendMessages(slackUsers, users, timeEntries, from, to, dayOfWeek, 'exec');
+      this.sendMessages(
+        slackUsers,
+        users,
+        timeEntries,
+        from,
+        to,
+        dayOfWeek,
+        'general'
+      );
+      this.sendMessages(
+        slackUsers,
+        users,
+        timeEntries,
+        from,
+        to,
+        dayOfWeek,
+        'exec'
+      );
 
       cb(null, { statusCode: 200 });
-
     } catch (e) {
-
       console.log(e.message);
 
       cb(null, { statusCode: 200 });
-
     }
-  }
+  };
 
-  async sendMessages(slackUsers, users, timeEntries, from, to, dayOfWeek, type) {
+  async sendMessages(
+    slackUsers,
+    users,
+    timeEntries,
+    from,
+    to,
+    dayOfWeek,
+    type
+  ) {
     // Create Slack attachments
-    const attachments = this.createAttachments(slackUsers, users, timeEntries, type).filter((a) => a.missing > 2);
+    const attachments = this.createAttachments(
+      slackUsers,
+      users,
+      timeEntries,
+      type
+    )
+      // filter by only people who are missing MORE than 4 hours.
+      .filter((a) => a.missing > 4);
 
     // Adding in the sorting logic for the attachments.
     attachments.sort((a, b) => {
-      return b.missing - a.missing
+      return b.missing - a.missing;
     });
 
-    const slackIds = attachments.map(attachment => attachment.slackId).join(' ');
+    const slackIds = attachments
+      .map((attachment) => attachment.slackId)
+      .join(' ');
 
     // Set plain text fallback message
-    const text = attachments.length > 0 ? strings.withAttachments(slackIds, from, to, dayOfWeek) : strings.withoutAttachments(dayOfWeek);
+    const text =
+      attachments.length > 0
+        ? strings.withAttachments(slackIds, from, to, dayOfWeek)
+        : strings.withoutAttachments(dayOfWeek);
     console.log('Text', text);
+    console.log('attachments', attachments);
 
     // Post message to Slack
-    if (type == 'exec') {
-      await this.execSlack.postMessage({ text, attachments });
-    } else {
-      await this.slack.postMessage({ text, attachments });
-    }
+    // if (type == 'exec') {
+    //   await this.execSlack.postMessage({ text, attachments });
+    // } else {
+    //   await this.slack.postMessage({ text, attachments });
+    // }
   }
 
   async getSlackProfiles() {
@@ -89,25 +131,29 @@ export class HarveyHandler {
     return response.members;
   }
 
-  createAttachments(slackUsers, users, timeEntries, type) {
-    return users.filter((u) => {
-      if (type == "exec") {
-        return u.is_active && u.roles.includes("Exec")
-      } else {
-        return u.is_active && !u.roles.includes("Exec")
-      }
-    }
-    )
-      .map((u) => {
-        var slackUser = slackUsers.find(slackUser => {
-          return slackUser.profile.email == u.email
-        })
-        if (slackUser) {
-          u.slackId = slackUser.id;
+  createAttachments(slackUsers, harvestUsers, timeEntries, type) {
+    return harvestUsers
+      .filter((harvestUser) => {
+        if (type == 'exec') {
+          return harvestUser.is_active && harvestUser.roles.includes('Exec');
         } else {
-          console.log('u', u);
+          return harvestUser.is_active && !harvestUser.roles.includes('Exec');
         }
-        return AttachmentTransformer.transform(u, timeEntries.filter((t) => u.id === t.user.id))
+      })
+      .map((harvestUser) => {
+        var slackUser = slackUsers.find((slackUser) => {
+          return slackUser.profile.email == harvestUser.email;
+        });
+        if (slackUser) {
+          harvestUser.slackId = slackUser.id;
+        } else {
+          console.log('****** MISSING SLACK USER', harvestUser);
+        }
+        return AttachmentTransformer.transform(
+          harvestUser,
+          timeEntries.filter((t) => harvestUser.id === t.user.id),
+          harvestUser.roles.includes('Flexible') ? 0.8 : 1
+        );
       });
   }
 }
